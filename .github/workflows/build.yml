@@ -1,5 +1,10 @@
 name: Build ExpressLRS
 on: [push, pull_request]
+
+concurrency:
+  group: firmware-deploy
+  cancel-in-progress: false
+
 jobs:
   build-and-validate-artifacts:
     runs-on: ubuntu-latest
