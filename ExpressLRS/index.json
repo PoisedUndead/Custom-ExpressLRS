@@ -1,11 +1,9 @@
 {
 "branches": {
-"master": "60efb967e1d12f76b7275fb453fcc37465fba354"
+"master": "2c1e7bf92f9210e399962fac29d2c9d9765eeab1"
 },
 "tags": {
 "4.1.0-CustomLabs": "ecbddc7c76133fbf077ed2a4ff6decacc1718db0",
-"4.1.1": "4a6217096a6c54d194f2243dc017ed058f36a900",
-"v1.0.0-CustomLabs": "ecbddc7c76133fbf077ed2a4ff6decacc1718db0",
-"v4.1.0-CustomLabs": "ecbddc7c76133fbf077ed2a4ff6decacc1718db0"
+"4.1.1": "4a6217096a6c54d194f2243dc017ed058f36a900"
 }
 }
