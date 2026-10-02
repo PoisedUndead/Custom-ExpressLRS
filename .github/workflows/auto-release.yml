@@ -1,0 +1,128 @@
+name: Auto Release on Upstream Release
+
+on:
+  schedule:
+    - cron: '0 */4 * * *'  # Check every 4 hours
+  workflow_dispatch:        # Allow manual trigger
+
+permissions:
+  contents: write
+
+jobs:
+  check-upstream-release:
+    runs-on: ubuntu-latest
+    outputs:
+      new_release: ${{ steps.check.outputs.new_release }}
+      upstream_tag: ${{ steps.check.outputs.upstream_tag }}
+      custom_tag: ${{ steps.check.outputs.custom_tag }}
+    steps:
+      - name: Check for new upstream release
+        id: check
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Get all non-prerelease upstream releases, sorted by date
+          LATEST_UPSTREAM=$(curl -s "https://api.github.com/repos/ExpressLRS/ExpressLRS/releases?per_page=5" \
+            | jq -r '[.[] | select(.prerelease == false and .draft == false)] | first | .tag_name')
+
+          if [ "$LATEST_UPSTREAM" = "null" ] || [ -z "$LATEST_UPSTREAM" ]; then
+            echo "Could not fetch upstream release"
+            echo "new_release=false" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          echo "Latest upstream release: $LATEST_UPSTREAM"
+          CUSTOM_TAG="${LATEST_UPSTREAM}-CustomLabs"
+
+          # Check if we already have this CustomLabs release tag
+          EXISTING=$(curl -s -o /dev/null -w "%{http_code}" \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            "https://api.github.com/repos/${{ github.repository }}/releases/tags/$CUSTOM_TAG")
+
+          if [ "$EXISTING" = "200" ]; then
+            echo "Already have release $CUSTOM_TAG — nothing to do"
+            echo "new_release=false" >> $GITHUB_OUTPUT
+          else
+            echo "New upstream release detected: $LATEST_UPSTREAM"
+            echo "new_release=true" >> $GITHUB_OUTPUT
+            echo "upstream_tag=$LATEST_UPSTREAM" >> $GITHUB_OUTPUT
+            echo "custom_tag=$CUSTOM_TAG" >> $GITHUB_OUTPUT
+          fi
+
+  sync-and-release:
+    needs: check-upstream-release
+    if: needs.check-upstream-release.outputs.new_release == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Configure Git
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Sync with upstream
+        id: sync
+        run: |
+          git remote add upstream https://github.com/ExpressLRS/ExpressLRS.git
+          git fetch upstream --tags
+
+          # Merge upstream master — this preserves all CustomLabs commits
+          git checkout master
+          if git merge upstream/master --no-edit; then
+            echo "merge_ok=true" >> $GITHUB_OUTPUT
+          else
+            echo "::error::Merge conflict detected — manual resolution required"
+            git merge --abort
+            echo "merge_ok=false" >> $GITHUB_OUTPUT
+            exit 1
+          fi
+
+      - name: Create CustomLabs tag
+        if: steps.sync.outputs.merge_ok == 'true'
+        run: |
+          CUSTOM_TAG="${{ needs.check-upstream-release.outputs.custom_tag }}"
+          echo "Creating tag: $CUSTOM_TAG"
+          git tag "$CUSTOM_TAG"
+
+      - name: Push master and tag together
+        if: steps.sync.outputs.merge_ok == 'true'
+        run: |
+          # Push both at once so build.yml sees the tag when generating index.json
+          git push origin master --tags
+
+      - name: Create GitHub Release
+        if: steps.sync.outputs.merge_ok == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          CUSTOM_TAG="${{ needs.check-upstream-release.outputs.custom_tag }}"
+          UPSTREAM_TAG="${{ needs.check-upstream-release.outputs.upstream_tag }}"
+
+          gh release create "$CUSTOM_TAG" \
+            --title "Release $CUSTOM_TAG" \
+            --notes "## CustomLabs Release based on ExpressLRS $UPSTREAM_TAG
+
+          This release includes all upstream ExpressLRS changes from [$UPSTREAM_TAG](https://github.com/ExpressLRS/ExpressLRS/releases/tag/$UPSTREAM_TAG) plus CustomLabs customizations.
+
+          ### What's included
+          - All upstream bug fixes and features from $UPSTREAM_TAG
+          - CustomLabs custom targets and configurations
+          - Firmware available via [CustomLabs Web Flasher](https://customlabs-elrs.pages.dev)
+
+          ### Flashing
+          Use the [CustomLabs Web Flasher](https://customlabs-elrs.pages.dev) to flash this firmware to your devices.
+          Select version **$CUSTOM_TAG** from the firmware version dropdown."
+
+      - name: Summary
+        if: steps.sync.outputs.merge_ok == 'true'
+        run: |
+          echo "## ✅ Auto-Release Complete" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- **Upstream release**: ${{ needs.check-upstream-release.outputs.upstream_tag }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **CustomLabs tag**: ${{ needs.check-upstream-release.outputs.custom_tag }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Build triggered**: The push to master will trigger the firmware build workflow" >> $GITHUB_STEP_SUMMARY
+          echo "- **Web Flasher**: Will show the new version after build completes (~30 min)" >> $GITHUB_STEP_SUMMARY
